@@ -83,6 +83,7 @@ int AlarmManager::AddAlarm(const Alarm& alarm) {
     PersistAlarm(stored);
     PersistAlarmIds();
     settings_.SetInt(kNextIdKey, next_alarm_id_);
+    settings_.Commit();
     return stored.id;
 }
 
@@ -100,6 +101,7 @@ bool AlarmManager::RemoveAlarm(int id) {
     alarms_.erase(it);
     RemoveAlarmFromStorage(id);
     PersistAlarmIds();
+    settings_.Commit();
     return true;
 }
 
@@ -117,6 +119,7 @@ bool AlarmManager::UpdateAlarm(const Alarm& alarm) {
     alarms_[alarm.id] = alarm;
     PersistAlarm(alarm);
     PersistAlarmIds();
+    settings_.Commit();
     return true;
 }
 

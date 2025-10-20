@@ -94,6 +94,7 @@ void Settings::EraseKey(const std::string& key) {
         if (ret != ESP_ERR_NVS_NOT_FOUND) {
             ESP_ERROR_CHECK(ret);
         }
+        dirty_ = true;
     } else {
         ESP_LOGW(TAG, "Namespace %s is not open for writing", ns_.c_str());
     }
@@ -102,7 +103,15 @@ void Settings::EraseKey(const std::string& key) {
 void Settings::EraseAll() {
     if (read_write_) {
         ESP_ERROR_CHECK(nvs_erase_all(nvs_handle_));
+        dirty_ = true;
     } else {
         ESP_LOGW(TAG, "Namespace %s is not open for writing", ns_.c_str());
+    }
+}
+
+void Settings::Commit() {
+    if (read_write_ && dirty_ && nvs_handle_ != 0) {
+        ESP_ERROR_CHECK(nvs_commit(nvs_handle_));
+        dirty_ = false;
     }
 }
