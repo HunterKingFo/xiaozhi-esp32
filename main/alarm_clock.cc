@@ -1,7 +1,12 @@
 #include "alarm_clock.h"
 
+#include <charconv>
+#include <cctype>
 #include <cstdlib>
+#include <limits>
 #include <sstream>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -25,20 +30,47 @@ std::string MakeKey(const char* prefix, int id) {
     return oss.str();
 }
 
+std::string_view TrimStringView(std::string_view view) {
+    auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+    while (!view.empty() && is_space(static_cast<unsigned char>(view.front()))) {
+        view.remove_prefix(1);
+    }
+    while (!view.empty() && is_space(static_cast<unsigned char>(view.back()))) {
+        view.remove_suffix(1);
+    }
+    return view;
+}
+
+template<typename T>
+std::optional<T> ParseIntegral(std::string_view text) {
+    text = TrimStringView(text);
+    if (text.empty()) {
+        return std::nullopt;
+    }
+
+    T value{};
+    auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 std::vector<int> ParseIdList(const std::string& id_list) {
     std::vector<int> ids;
     std::stringstream ss(id_list);
     std::string item;
     while (std::getline(ss, item, ',')) {
-        if (item.empty()) {
+        std::string_view trimmed = TrimStringView(item);
+        if (trimmed.empty()) {
             continue;
         }
-        char* end_ptr = nullptr;
-        long value = std::strtol(item.c_str(), &end_ptr, 10);
-        if (end_ptr != item.c_str()) {
-            ids.push_back(static_cast<int>(value));
+        auto parsed = ParseIntegral<int>(trimmed);
+        if (parsed.has_value()) {
+            ids.push_back(parsed.value());
         } else {
-            ESP_LOGW(TAG, "Invalid alarm id entry: %s", item.c_str());
+            std::string invalid(trimmed);
+            ESP_LOGW(TAG, "Invalid alarm id entry: %s", invalid.c_str());
         }
     }
     return ids;
@@ -184,13 +216,26 @@ void AlarmManager::LoadAlarms() {
 
             std::string time_key = MakeKey("alarm_time_", id);
             std::string time_str = settings_.GetString(time_key, "0");
-            char* end_ptr = nullptr;
-            long long time_value = std::strtoll(time_str.c_str(), &end_ptr, 10);
-            if (end_ptr != time_str.c_str()) {
-                alarm.time = static_cast<time_t>(time_value);
-            } else {
-                ESP_LOGW(TAG, "Invalid time for alarm %d", id);
+            auto trimmed_time = TrimStringView(time_str);
+            auto parsed_time = ParseIntegral<long long>(trimmed_time);
+            if (!parsed_time.has_value()) {
+                if (!trimmed_time.empty()) {
+                    std::string invalid(trimmed_time);
+                    ESP_LOGW(TAG, "Invalid time for alarm %d: %s", id, invalid.c_str());
+                } else {
+                    ESP_LOGW(TAG, "Invalid time for alarm %d", id);
+                }
+                continue;
             }
+
+            long long time_value = parsed_time.value();
+            if (time_value < std::numeric_limits<time_t>::min() ||
+                time_value > std::numeric_limits<time_t>::max()) {
+                std::string invalid(trimmed_time);
+                ESP_LOGW(TAG, "Time for alarm %d out of range: %s", id, invalid.c_str());
+                continue;
+            }
+            alarm.time = static_cast<time_t>(time_value);
 
             std::string repeat_key = MakeKey("alarm_repeat_", id);
             alarm.repeat = settings_.GetBool(repeat_key, false);
