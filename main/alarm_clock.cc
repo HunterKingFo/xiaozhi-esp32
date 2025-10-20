@@ -2,9 +2,16 @@
 
 #include <cstdlib>
 #include <sstream>
+#include <utility>
 #include <vector>
 
+#include <esp_err.h>
 #include <esp_log.h>
+
+#include "application.h"
+#include "assets/lang_config.h"
+#include "board.h"
+#include "display.h"
 
 namespace {
 constexpr const char* kNamespace = "alarm_clock";
@@ -53,7 +60,25 @@ std::string JoinIds(const std::map<int, Alarm>& alarms) {
 }  // namespace
 
 AlarmManager::AlarmManager() : settings_(kNamespace, true) {
+    esp_timer_create_args_t timer_args = {
+        .callback = [](void* arg) {
+            auto* manager = static_cast<AlarmManager*>(arg);
+            manager->OnSchedulerTimer();
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "alarm_scheduler",
+        .skip_unhandled_events = true,
+    };
+
+    esp_err_t err = esp_timer_create(&timer_args, &scheduler_timer_);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create scheduler timer: %s", esp_err_to_name(err));
+        scheduler_timer_ = nullptr;
+    }
+
     LoadAlarms();
+    ScheduleNext();
 }
 
 AlarmManager::~AlarmManager() {
@@ -84,6 +109,7 @@ int AlarmManager::AddAlarm(const Alarm& alarm) {
     PersistAlarmIds();
     settings_.SetInt(kNextIdKey, next_alarm_id_);
     settings_.Commit();
+    ScheduleNext();
     return stored.id;
 }
 
@@ -102,6 +128,7 @@ bool AlarmManager::RemoveAlarm(int id) {
     RemoveAlarmFromStorage(id);
     PersistAlarmIds();
     settings_.Commit();
+    ScheduleNext();
     return true;
 }
 
@@ -120,6 +147,7 @@ bool AlarmManager::UpdateAlarm(const Alarm& alarm) {
     PersistAlarm(alarm);
     PersistAlarmIds();
     settings_.Commit();
+    ScheduleNext();
     return true;
 }
 
@@ -200,4 +228,145 @@ void AlarmManager::RemoveAlarmFromStorage(int id) {
 
 int AlarmManager::GenerateId() {
     return next_alarm_id_++;
+}
+
+void AlarmManager::SetCloudNotifier(std::function<void(const Alarm&)> notifier) {
+    cloud_notifier_ = std::move(notifier);
+}
+
+void AlarmManager::ScheduleNext() {
+    if (scheduler_timer_ == nullptr) {
+        return;
+    }
+
+    if (esp_timer_is_active(scheduler_timer_)) {
+        esp_timer_stop(scheduler_timer_);
+    }
+
+    if (alarms_.empty()) {
+        return;
+    }
+
+    time_t now = std::time(nullptr);
+    bool has_next = false;
+    time_t next_time = 0;
+
+    for (const auto& entry : alarms_) {
+        if (!has_next || entry.second.time < next_time) {
+            next_time = entry.second.time;
+            has_next = true;
+        }
+    }
+
+    if (!has_next) {
+        return;
+    }
+
+    int64_t delay_us = 1000;
+    if (next_time > now) {
+        delay_us = static_cast<int64_t>(next_time - now) * 1000000LL;
+        if (delay_us < 1000) {
+            delay_us = 1000;
+        }
+    }
+
+    esp_err_t err = esp_timer_start_once(scheduler_timer_, delay_us);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start scheduler timer: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Scheduled next alarm in %lld ms", static_cast<long long>(delay_us / 1000));
+    }
+}
+
+void AlarmManager::OnSchedulerTimer() {
+    constexpr int kSecondsPerMinute = 60;
+    time_t now = std::time(nullptr);
+    std::vector<int> due_ids;
+    due_ids.reserve(alarms_.size());
+
+    for (const auto& entry : alarms_) {
+        if (entry.second.time <= now) {
+            due_ids.push_back(entry.first);
+        }
+    }
+
+    if (due_ids.empty()) {
+        ScheduleNext();
+        return;
+    }
+
+    bool commit_needed = false;
+    bool ids_changed = false;
+    std::vector<int> remove_ids;
+
+    for (int id : due_ids) {
+        auto it = alarms_.find(id);
+        if (it == alarms_.end()) {
+            continue;
+        }
+
+        Alarm& stored_alarm = it->second;
+        Alarm alarm_copy = stored_alarm;
+        std::string notification = alarm_copy.name.empty() ? std::string("Alarm") : alarm_copy.name;
+        auto notifier = cloud_notifier_;
+
+        Application::GetInstance().Schedule([alarm_copy, notification, notifier]() {
+            auto display = Board::GetInstance().GetDisplay();
+            if (display != nullptr) {
+                display->ShowNotification(notification.c_str(), 5000);
+            }
+
+            auto& app = Application::GetInstance();
+            app.PlaySound(Lang::Sounds::OGG_POPUP);
+
+            if (notifier) {
+                notifier(alarm_copy);
+            }
+        });
+
+        if (stored_alarm.repeat && stored_alarm.interval > 0) {
+            int64_t interval_seconds = static_cast<int64_t>(stored_alarm.interval) * kSecondsPerMinute;
+            if (interval_seconds <= 0) {
+                interval_seconds = kSecondsPerMinute;
+            }
+
+            time_t next_time = stored_alarm.time + interval_seconds;
+            while (next_time <= now) {
+                next_time += interval_seconds;
+            }
+
+            stored_alarm.time = next_time;
+            PersistAlarm(stored_alarm);
+            commit_needed = true;
+        } else {
+            if (stored_alarm.timer_handle != nullptr) {
+                esp_timer_stop(stored_alarm.timer_handle);
+                esp_timer_delete(stored_alarm.timer_handle);
+                stored_alarm.timer_handle = nullptr;
+            }
+            remove_ids.push_back(id);
+        }
+    }
+
+    for (int id : remove_ids) {
+        auto it = alarms_.find(id);
+        if (it == alarms_.end()) {
+            continue;
+        }
+
+        RemoveAlarmFromStorage(id);
+        alarms_.erase(it);
+        ids_changed = true;
+        commit_needed = true;
+    }
+
+    if (ids_changed) {
+        PersistAlarmIds();
+    }
+
+    if (commit_needed || ids_changed) {
+        settings_.Commit();
+    }
+
+    ScheduleNext();
 }

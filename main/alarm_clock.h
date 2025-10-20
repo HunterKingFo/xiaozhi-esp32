@@ -2,6 +2,7 @@
 #define ALARM_CLOCK_H
 
 #include <ctime>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -32,17 +33,22 @@ public:
     std::optional<Alarm> GetAlarm(int id) const;
     std::vector<Alarm> GetAlarms() const;
 
+    void SetCloudNotifier(std::function<void(const Alarm&)> notifier);
+
 private:
     void LoadAlarms();
     void PersistAlarm(const Alarm& alarm);
     void PersistAlarmIds();
     void RemoveAlarmFromStorage(int id);
     int GenerateId();
+    void ScheduleNext();
+    void OnSchedulerTimer();
 
     std::map<int, Alarm> alarms_;
     int next_alarm_id_ = 1;
     Settings settings_;
     esp_timer_handle_t scheduler_timer_ = nullptr;
+    std::function<void(const Alarm&)> cloud_notifier_;
 };
 
 #endif  // ALARM_CLOCK_H
