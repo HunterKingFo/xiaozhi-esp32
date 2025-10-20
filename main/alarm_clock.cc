@@ -82,6 +82,7 @@ AlarmManager::AlarmManager() : settings_(kNamespace, true) {
 }
 
 AlarmManager::~AlarmManager() {
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
     for (auto& [id, alarm] : alarms_) {
         if (alarm.timer_handle != nullptr) {
             esp_timer_stop(alarm.timer_handle);
@@ -97,6 +98,7 @@ AlarmManager::~AlarmManager() {
 }
 
 int AlarmManager::AddAlarm(const Alarm& alarm) {
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
     Alarm stored = alarm;
     if (stored.id <= 0) {
         stored.id = GenerateId();
@@ -109,11 +111,12 @@ int AlarmManager::AddAlarm(const Alarm& alarm) {
     PersistAlarmIds();
     settings_.SetInt(kNextIdKey, next_alarm_id_);
     settings_.Commit();
-    ScheduleNext();
+    ScheduleNextLocked();
     return stored.id;
 }
 
 bool AlarmManager::RemoveAlarm(int id) {
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
     auto it = alarms_.find(id);
     if (it == alarms_.end()) {
         return false;
@@ -128,11 +131,12 @@ bool AlarmManager::RemoveAlarm(int id) {
     RemoveAlarmFromStorage(id);
     PersistAlarmIds();
     settings_.Commit();
-    ScheduleNext();
+    ScheduleNextLocked();
     return true;
 }
 
 bool AlarmManager::UpdateAlarm(const Alarm& alarm) {
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
     auto it = alarms_.find(alarm.id);
     if (it == alarms_.end()) {
         return false;
@@ -147,11 +151,12 @@ bool AlarmManager::UpdateAlarm(const Alarm& alarm) {
     PersistAlarm(alarm);
     PersistAlarmIds();
     settings_.Commit();
-    ScheduleNext();
+    ScheduleNextLocked();
     return true;
 }
 
 std::optional<Alarm> AlarmManager::GetAlarm(int id) const {
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
     auto it = alarms_.find(id);
     if (it == alarms_.end()) {
         return std::nullopt;
@@ -160,6 +165,7 @@ std::optional<Alarm> AlarmManager::GetAlarm(int id) const {
 }
 
 std::vector<Alarm> AlarmManager::GetAlarms() const {
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
     std::vector<Alarm> results;
     results.reserve(alarms_.size());
     for (const auto& entry : alarms_) {
@@ -231,10 +237,16 @@ int AlarmManager::GenerateId() {
 }
 
 void AlarmManager::SetCloudNotifier(std::function<void(const Alarm&)> notifier) {
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
     cloud_notifier_ = std::move(notifier);
 }
 
 void AlarmManager::ScheduleNext() {
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
+    ScheduleNextLocked();
+}
+
+void AlarmManager::ScheduleNextLocked() {
     if (scheduler_timer_ == nullptr) {
         return;
     }
@@ -281,6 +293,7 @@ void AlarmManager::ScheduleNext() {
 void AlarmManager::OnSchedulerTimer() {
     constexpr int kSecondsPerMinute = 60;
     time_t now = std::time(nullptr);
+    std::lock_guard<std::mutex> lock(alarms_mutex_);
     std::vector<int> due_ids;
     due_ids.reserve(alarms_.size());
 
@@ -291,7 +304,7 @@ void AlarmManager::OnSchedulerTimer() {
     }
 
     if (due_ids.empty()) {
-        ScheduleNext();
+        ScheduleNextLocked();
         return;
     }
 
@@ -368,5 +381,5 @@ void AlarmManager::OnSchedulerTimer() {
         settings_.Commit();
     }
 
-    ScheduleNext();
+    ScheduleNextLocked();
 }

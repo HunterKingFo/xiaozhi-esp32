@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <mutex>
 
 #include <esp_timer.h>
 
@@ -43,12 +44,14 @@ private:
     int GenerateId();
     void ScheduleNext();
     void OnSchedulerTimer();
+    void ScheduleNextLocked();
 
     std::map<int, Alarm> alarms_;
     int next_alarm_id_ = 1;
     Settings settings_;
     esp_timer_handle_t scheduler_timer_ = nullptr;
     std::function<void(const Alarm&)> cloud_notifier_;
+    mutable std::mutex alarms_mutex_;
 };
 
 #endif  // ALARM_CLOCK_H
