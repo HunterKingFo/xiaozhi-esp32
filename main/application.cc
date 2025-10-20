@@ -9,6 +9,7 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
+#include "alarm_clock.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -16,6 +17,9 @@
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
+#include <algorithm>
+#include <ctime>
+#include <stdexcept>
 
 #define TAG "Application"
 
@@ -34,6 +38,57 @@ static const char* const STATE_STRINGS[] = {
     "fatal_error",
     "invalid_state"
 };
+
+namespace {
+
+std::string ToIso8601(time_t time) {
+    struct tm time_info;
+    gmtime_r(&time, &time_info);
+    char buffer[32];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &time_info);
+    return std::string(buffer);
+}
+
+cJSON* BuildAlarmJson(const Alarm& alarm, time_t now) {
+    cJSON* json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "id", alarm.id);
+    if (!alarm.name.empty()) {
+        cJSON_AddStringToObject(json, "name", alarm.name.c_str());
+    }
+    cJSON_AddNumberToObject(json, "triggerEpoch", static_cast<double>(alarm.time));
+    cJSON_AddStringToObject(json, "triggerIso", ToIso8601(alarm.time).c_str());
+    long remaining = static_cast<long>(alarm.time - now);
+    if (remaining < 0) {
+        remaining = 0;
+    }
+    cJSON_AddNumberToObject(json, "timeUntilSeconds", remaining);
+    cJSON_AddBoolToObject(json, "repeat", alarm.repeat);
+    cJSON_AddNumberToObject(json, "intervalMinutes", alarm.interval);
+    cJSON_AddNumberToObject(json, "remainingOccurrences", alarm.repeat ? -1 : 1);
+    return json;
+}
+
+time_t ResolveTriggerTime(int delay_seconds, int hour, int minute) {
+    time_t now = std::time(nullptr);
+    if (delay_seconds >= 0) {
+        return now + delay_seconds;
+    }
+
+    struct tm local_time;
+    localtime_r(&now, &local_time);
+    local_time.tm_hour = hour;
+    local_time.tm_min = minute;
+    local_time.tm_sec = 0;
+    local_time.tm_isdst = -1;
+    time_t scheduled = mktime(&local_time);
+    if (scheduled <= now) {
+        local_time.tm_mday += 1;
+        scheduled = mktime(&local_time);
+    }
+    return scheduled;
+}
+
+}  // namespace
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
@@ -401,6 +456,127 @@ void Application::Start() {
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
+
+    static AlarmManager alarm_manager;
+
+    mcp_server.AddTool(
+        "self.alarm.create",
+        "创建或更新闹钟，支持延时触发或指定时间触发",
+        PropertyList({
+            Property("name", kPropertyTypeString, std::string("")),
+            Property("delay", kPropertyTypeInteger, -1),
+            Property("hour", kPropertyTypeInteger, -1),
+            Property("minute", kPropertyTypeInteger, -1),
+            Property("repeat", kPropertyTypeBoolean, false),
+            Property("interval", kPropertyTypeInteger, 0),
+            Property("id", kPropertyTypeInteger, -1),
+        }),
+        [&alarm_manager](const PropertyList& properties) -> ReturnValue {
+            int delay = properties["delay"].value<int>();
+            int hour = properties["hour"].value<int>();
+            int minute = properties["minute"].value<int>();
+            bool repeat = properties["repeat"].value<bool>();
+            int interval = properties["interval"].value<int>();
+            int id = properties["id"].value<int>();
+            std::string name = properties["name"].value<std::string>();
+
+            bool has_delay = delay >= 0;
+            bool has_time = hour >= 0 || minute >= 0;
+
+            if (has_delay && has_time) {
+                throw std::runtime_error("不能同时指定 delay 和 hour/minute");
+            }
+            if (!has_delay && !has_time) {
+                throw std::runtime_error("必须提供 delay 或 hour/minute");
+            }
+            if ((hour >= 0 && minute < 0) || (minute >= 0 && hour < 0)) {
+                throw std::runtime_error("提供 hour 与 minute 时需要同时给出");
+            }
+
+            if (has_delay && delay <= 0) {
+                throw std::runtime_error("delay 需要为正整数");
+            }
+            if (hour >= 0 && (hour < 0 || hour > 23)) {
+                throw std::runtime_error("hour 需要在 0-23 之间");
+            }
+            if (minute >= 0 && (minute < 0 || minute > 59)) {
+                throw std::runtime_error("minute 需要在 0-59 之间");
+            }
+
+            if (repeat && interval <= 0) {
+                throw std::runtime_error("repeat 为 true 时 interval 需要为正整数（分钟）");
+            }
+            if (!repeat && interval > 0) {
+                throw std::runtime_error("repeat 为 false 时无需提供 interval");
+            }
+
+            time_t trigger_time = ResolveTriggerTime(has_delay ? delay : -1, hour, minute);
+
+            Alarm alarm;
+            alarm.time = trigger_time;
+            alarm.repeat = repeat;
+            alarm.interval = repeat ? interval : 0;
+            alarm.name = name;
+            if (id > 0) {
+                alarm.id = id;
+                if (!alarm_manager.UpdateAlarm(alarm)) {
+                    throw std::runtime_error("指定的闹钟不存在: " + std::to_string(id));
+                }
+            } else {
+                int new_id = alarm_manager.AddAlarm(alarm);
+                alarm.id = new_id;
+            }
+
+            auto stored = alarm_manager.GetAlarm(alarm.id);
+            if (!stored.has_value()) {
+                throw std::runtime_error("创建闹钟失败");
+            }
+
+            time_t now = std::time(nullptr);
+            return BuildAlarmJson(stored.value(), now);
+        });
+
+    mcp_server.AddTool(
+        "self.alarm.list",
+        "列出所有闹钟及下一次触发信息",
+        PropertyList(),
+        [&alarm_manager](const PropertyList& properties) -> ReturnValue {
+            (void)properties;
+            auto alarms = alarm_manager.GetAlarms();
+            time_t now = std::time(nullptr);
+            cJSON* json = cJSON_CreateObject();
+            cJSON* items = cJSON_CreateArray();
+            for (const auto& alarm : alarms) {
+                cJSON_AddItemToArray(items, BuildAlarmJson(alarm, now));
+            }
+            cJSON_AddItemToObject(json, "alarms", items);
+            cJSON_AddNumberToObject(json, "count", static_cast<int>(alarms.size()));
+            if (!alarms.empty()) {
+                auto next_alarm = std::min_element(
+                    alarms.begin(), alarms.end(),
+                    [](const Alarm& a, const Alarm& b) { return a.time < b.time; });
+                cJSON_AddNumberToObject(json, "nextTriggerEpoch", static_cast<double>(next_alarm->time));
+                cJSON_AddStringToObject(json, "nextTriggerIso", ToIso8601(next_alarm->time).c_str());
+            }
+            return json;
+        });
+
+    mcp_server.AddTool(
+        "self.alarm.delete",
+        "根据 ID 删除闹钟",
+        PropertyList({
+            Property("id", kPropertyTypeInteger),
+        }),
+        [&alarm_manager](const PropertyList& properties) -> ReturnValue {
+            int id = properties["id"].value<int>();
+            if (!alarm_manager.RemoveAlarm(id)) {
+                throw std::runtime_error("未找到要删除的闹钟: " + std::to_string(id));
+            }
+            cJSON* json = cJSON_CreateObject();
+            cJSON_AddStringToObject(json, "status", "deleted");
+            cJSON_AddNumberToObject(json, "id", id);
+            return json;
+        });
 
     if (ota.HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
