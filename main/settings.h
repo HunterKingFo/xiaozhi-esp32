@@ -17,6 +17,7 @@ public:
     void SetBool(const std::string& key, bool value);
     void EraseKey(const std::string& key);
     void EraseAll();
+    void Commit();
 
 private:
     std::string ns_;
