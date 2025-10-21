@@ -9,7 +9,7 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
-#include "alarm_clock.h"
+#include "services/alarm_clock.h"
 
 #include <cstring>
 #include <esp_log.h>
