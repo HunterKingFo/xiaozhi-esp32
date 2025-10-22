@@ -1,5 +1,6 @@
 #include "alarm_clock.h"
 
+#include <array>
 #include <charconv>
 #include <cctype>
 #include <cstdlib>
@@ -23,6 +24,34 @@ constexpr const char* kNamespace = "alarm_clock";
 constexpr const char* kAlarmIdsKey = "alarm_ids";
 constexpr const char* kNextIdKey = "next_alarm_id";
 const char* TAG = "AlarmManager";
+
+constexpr std::array<std::string_view, 3> kAllowedSounds{{"ALARM1", "ALARM2", "ALARM3"}};
+
+bool IsValidSound(std::string_view sound) {
+    for (auto allowed : kAllowedSounds) {
+        if (sound == allowed) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string NormalizeSound(std::string_view sound) {
+    if (IsValidSound(sound)) {
+        return std::string(sound);
+    }
+    return std::string("ALARM1");
+}
+
+std::string_view ResolveAlarmSoundClip(std::string_view sound) {
+    if (sound == "ALARM2") {
+        return Lang::Sounds::OGG_ALARM2;
+    }
+    if (sound == "ALARM3") {
+        return Lang::Sounds::OGG_ALARM3;
+    }
+    return Lang::Sounds::OGG_ALARM1;
+}
 
 std::string MakeKey(const char* prefix, int id) {
     std::ostringstream oss;
@@ -132,6 +161,7 @@ AlarmManager::~AlarmManager() {
 int AlarmManager::AddAlarm(const Alarm& alarm) {
     std::lock_guard<std::mutex> lock(alarms_mutex_);
     Alarm stored = alarm;
+    stored.sound = NormalizeSound(stored.sound);
     if (stored.id <= 0) {
         stored.id = GenerateId();
     } else if (stored.id >= next_alarm_id_) {
@@ -179,8 +209,10 @@ bool AlarmManager::UpdateAlarm(const Alarm& alarm) {
         esp_timer_delete(it->second.timer_handle);
     }
 
-    alarms_[alarm.id] = alarm;
-    PersistAlarm(alarm);
+    Alarm updated = alarm;
+    updated.sound = NormalizeSound(updated.sound);
+    alarms_[updated.id] = updated;
+    PersistAlarm(updated);
     PersistAlarmIds();
     settings_.Commit();
     ScheduleNextLocked();
@@ -243,6 +275,14 @@ void AlarmManager::LoadAlarms() {
             std::string interval_key = MakeKey("alarm_interval_", id);
             alarm.interval = settings_.GetInt(interval_key, 0);
 
+            std::string sound_key = MakeKey("alarm_sound_", id);
+            std::string stored_sound = settings_.GetString(sound_key, "ALARM1");
+            if (!IsValidSound(stored_sound)) {
+                ESP_LOGW(TAG, "Invalid sound for alarm %d: %s", id, stored_sound.c_str());
+                stored_sound = "ALARM1";
+            }
+            alarm.sound = stored_sound;
+
             alarms_.emplace(id, std::move(alarm));
         }
     }
@@ -264,6 +304,7 @@ void AlarmManager::PersistAlarm(const Alarm& alarm) {
     settings_.SetString(MakeKey("alarm_time_", alarm.id), std::to_string(static_cast<long long>(alarm.time)));
     settings_.SetBool(MakeKey("alarm_repeat_", alarm.id), alarm.repeat);
     settings_.SetInt(MakeKey("alarm_interval_", alarm.id), alarm.interval);
+    settings_.SetString(MakeKey("alarm_sound_", alarm.id), NormalizeSound(alarm.sound));
 }
 
 void AlarmManager::PersistAlarmIds() {
@@ -275,6 +316,7 @@ void AlarmManager::RemoveAlarmFromStorage(int id) {
     settings_.EraseKey(MakeKey("alarm_time_", id));
     settings_.EraseKey(MakeKey("alarm_repeat_", id));
     settings_.EraseKey(MakeKey("alarm_interval_", id));
+    settings_.EraseKey(MakeKey("alarm_sound_", id));
 }
 
 int AlarmManager::GenerateId() {
@@ -367,15 +409,16 @@ void AlarmManager::OnSchedulerTimer() {
         Alarm alarm_copy = stored_alarm;
         std::string notification = alarm_copy.name.empty() ? std::string("Alarm") : alarm_copy.name;
         auto notifier = cloud_notifier_;
+        std::string_view sound_clip = ResolveAlarmSoundClip(alarm_copy.sound);
 
-        Application::GetInstance().Schedule([alarm_copy, notification, notifier]() {
+        Application::GetInstance().Schedule([alarm_copy, notification, notifier, sound_clip]() {
             auto display = Board::GetInstance().GetDisplay();
             if (display != nullptr) {
                 display->ShowNotification(notification.c_str(), 5000);
             }
 
             auto& app = Application::GetInstance();
-            app.PlaySound(Lang::Sounds::OGG_POPUP);
+            app.PlaySound(sound_clip);
 
             if (notifier) {
                 notifier(alarm_copy);
