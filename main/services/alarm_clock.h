@@ -18,6 +18,7 @@ struct Alarm {
     bool repeat = false;
     int interval = 0;
     std::string name;
+    std::string sound{"ALARM1"};
     int id = 0;
     esp_timer_handle_t timer_handle = nullptr;
 };

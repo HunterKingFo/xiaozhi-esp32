@@ -11,6 +11,7 @@
 #include "settings.h"
 #include "services/alarm_clock.h"
 
+#include <array>
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
@@ -20,6 +21,7 @@
 #include <algorithm>
 #include <ctime>
 #include <stdexcept>
+#include <string_view>
 
 #define TAG "Application"
 
@@ -41,6 +43,24 @@ static const char* const STATE_STRINGS[] = {
 
 namespace {
 
+constexpr std::array<std::string_view, 3> kAlarmSounds{{"ALARM1", "ALARM2", "ALARM3"}};
+
+bool IsValidAlarmSound(std::string_view sound) {
+    for (auto allowed : kAlarmSounds) {
+        if (sound == allowed) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string NormalizeAlarmSound(std::string_view sound) {
+    if (IsValidAlarmSound(sound)) {
+        return std::string(sound);
+    }
+    return std::string("ALARM1");
+}
+
 std::string ToIso8601(time_t time) {
     struct tm time_info;
     gmtime_r(&time, &time_info);
@@ -55,6 +75,8 @@ cJSON* BuildAlarmJson(const Alarm& alarm, time_t now) {
     if (!alarm.name.empty()) {
         cJSON_AddStringToObject(json, "name", alarm.name.c_str());
     }
+    std::string sound = NormalizeAlarmSound(alarm.sound);
+    cJSON_AddStringToObject(json, "sound", sound.c_str());
     cJSON_AddNumberToObject(json, "triggerEpoch", static_cast<double>(alarm.time));
     cJSON_AddStringToObject(json, "triggerIso", ToIso8601(alarm.time).c_str());
     long remaining = static_cast<long>(alarm.time - now);
@@ -464,6 +486,7 @@ void Application::Start() {
         "创建或更新闹钟，支持延时触发或指定时间触发",
         PropertyList({
             Property("name", kPropertyTypeString, std::string("")),
+            Property("sound", kPropertyTypeString, std::string("ALARM1")),
             Property("delay", kPropertyTypeInteger, -1),
             Property("hour", kPropertyTypeInteger, -1),
             Property("minute", kPropertyTypeInteger, -1),
@@ -479,6 +502,15 @@ void Application::Start() {
             int interval = properties["interval"].value<int>();
             int id = properties["id"].value<int>();
             std::string name = properties["name"].value<std::string>();
+            std::string sound = properties["sound"].value<std::string>();
+
+            if (sound.empty()) {
+                sound = "ALARM1";
+            }
+            if (!IsValidAlarmSound(sound)) {
+                throw std::runtime_error("sound 需要为 ALARM1/ALARM2/ALARM3");
+            }
+            sound = NormalizeAlarmSound(sound);
 
             bool has_delay = delay >= 0;
             bool has_time = hour >= 0 || minute >= 0;
@@ -517,6 +549,7 @@ void Application::Start() {
             alarm.repeat = repeat;
             alarm.interval = repeat ? interval : 0;
             alarm.name = name;
+            alarm.sound = sound;
             if (id > 0) {
                 alarm.id = id;
                 if (!alarm_manager.UpdateAlarm(alarm)) {
