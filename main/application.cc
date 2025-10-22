@@ -480,6 +480,7 @@ void Application::Start() {
     mcp_server.AddUserOnlyTools();
 
     static AlarmManager alarm_manager;
+    auto* alarm_manager_ptr = &alarm_manager;
 
     mcp_server.AddTool(
         "self.alarm.create",
@@ -494,7 +495,8 @@ void Application::Start() {
             Property("interval", kPropertyTypeInteger, 0),
             Property("id", kPropertyTypeInteger, -1),
         }),
-        [&alarm_manager](const PropertyList& properties) -> ReturnValue {
+        [alarm_manager_ptr](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = *alarm_manager_ptr;
             int delay = properties["delay"].value<int>();
             int hour = properties["hour"].value<int>();
             int minute = properties["minute"].value<int>();
@@ -573,7 +575,8 @@ void Application::Start() {
         "self.alarm.list",
         "列出所有闹钟及下一次触发信息",
         PropertyList(),
-        [&alarm_manager](const PropertyList& properties) -> ReturnValue {
+        [alarm_manager_ptr](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = *alarm_manager_ptr;
             (void)properties;
             auto alarms = alarm_manager.GetAlarms();
             time_t now = std::time(nullptr);
@@ -600,7 +603,8 @@ void Application::Start() {
         PropertyList({
             Property("id", kPropertyTypeInteger),
         }),
-        [&alarm_manager](const PropertyList& properties) -> ReturnValue {
+        [alarm_manager_ptr](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = *alarm_manager_ptr;
             int id = properties["id"].value<int>();
             if (!alarm_manager.RemoveAlarm(id)) {
                 throw std::runtime_error("未找到要删除的闹钟: " + std::to_string(id));
