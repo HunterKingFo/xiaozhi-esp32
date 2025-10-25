@@ -37,6 +37,25 @@ std::string Settings::GetString(const std::string& key, const std::string& defau
     return value;
 }
 
+std::optional<std::string> Settings::TryGetString(const std::string& key) {
+    if (nvs_handle_ == 0) {
+        return std::nullopt;
+    }
+
+    size_t length = 0;
+    if (nvs_get_str(nvs_handle_, key.c_str(), nullptr, &length) != ESP_OK) {
+        return std::nullopt;
+    }
+
+    std::string value;
+    value.resize(length);
+    ESP_ERROR_CHECK(nvs_get_str(nvs_handle_, key.c_str(), value.data(), &length));
+    while (!value.empty() && value.back() == '\0') {
+        value.pop_back();
+    }
+    return value;
+}
+
 void Settings::SetString(const std::string& key, const std::string& value) {
     if (read_write_) {
         ESP_ERROR_CHECK(nvs_set_str(nvs_handle_, key.c_str(), value.c_str()));
@@ -58,6 +77,18 @@ int32_t Settings::GetInt(const std::string& key, int32_t default_value) {
     return value;
 }
 
+std::optional<int32_t> Settings::TryGetInt(const std::string& key) {
+    if (nvs_handle_ == 0) {
+        return std::nullopt;
+    }
+
+    int32_t value;
+    if (nvs_get_i32(nvs_handle_, key.c_str(), &value) != ESP_OK) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 void Settings::SetInt(const std::string& key, int32_t value) {
     if (read_write_) {
         ESP_ERROR_CHECK(nvs_set_i32(nvs_handle_, key.c_str(), value));
@@ -75,6 +106,18 @@ bool Settings::GetBool(const std::string& key, bool default_value) {
     uint8_t value;
     if (nvs_get_u8(nvs_handle_, key.c_str(), &value) != ESP_OK) {
         return default_value;
+    }
+    return value != 0;
+}
+
+std::optional<bool> Settings::TryGetBool(const std::string& key) {
+    if (nvs_handle_ == 0) {
+        return std::nullopt;
+    }
+
+    uint8_t value;
+    if (nvs_get_u8(nvs_handle_, key.c_str(), &value) != ESP_OK) {
+        return std::nullopt;
     }
     return value != 0;
 }

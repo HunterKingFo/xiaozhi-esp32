@@ -1,6 +1,7 @@
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
+#include <optional>
 #include <string>
 #include <nvs_flash.h>
 
@@ -11,10 +12,13 @@ public:
 
     std::string GetString(const std::string& key, const std::string& default_value = "");
     void SetString(const std::string& key, const std::string& value);
+    std::optional<std::string> TryGetString(const std::string& key);
     int32_t GetInt(const std::string& key, int32_t default_value = 0);
     void SetInt(const std::string& key, int32_t value);
+    std::optional<int32_t> TryGetInt(const std::string& key);
     bool GetBool(const std::string& key, bool default_value = false);
     void SetBool(const std::string& key, bool value);
+    std::optional<bool> TryGetBool(const std::string& key);
     void EraseKey(const std::string& key);
     void EraseAll();
     void Commit();

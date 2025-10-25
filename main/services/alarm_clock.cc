@@ -23,6 +23,16 @@ namespace {
 constexpr const char* kNamespace = "alarm_clock";
 constexpr const char* kAlarmIdsKey = "alarm_ids";
 constexpr const char* kNextIdKey = "next_alarm_id";
+constexpr const char* kAlarmNameKeyPrefix = "a_n_";
+constexpr const char* kAlarmTimeKeyPrefix = "a_t_";
+constexpr const char* kAlarmRepeatKeyPrefix = "a_r_";
+constexpr const char* kAlarmIntervalKeyPrefix = "a_i_";
+constexpr const char* kAlarmSoundKeyPrefix = "a_s_";
+constexpr const char* kLegacyAlarmNameKeyPrefix = "alarm_";
+constexpr const char* kLegacyAlarmTimeKeyPrefix = "alarm_time_";
+constexpr const char* kLegacyAlarmRepeatKeyPrefix = "alarm_repeat_";
+constexpr const char* kLegacyAlarmIntervalKeyPrefix = "alarm_interval_";
+constexpr const char* kLegacyAlarmSoundKeyPrefix = "alarm_sound_";
 const char* TAG = "AlarmManager";
 
 constexpr std::array<std::string_view, 3> kAllowedSounds{{"ALARM1", "ALARM2", "ALARM3"}};
@@ -244,10 +254,61 @@ void AlarmManager::LoadAlarms() {
         for (int id : ParseIdList(ids)) {
             Alarm alarm;
             alarm.id = id;
-            alarm.name = settings_.GetString(MakeKey("alarm_", id), "");
+            auto load_string_field = [&](const char* prefix, const char* legacy_prefix, const std::string& fallback) {
+                std::string key = MakeKey(prefix, id);
+                auto value = settings_.TryGetString(key);
+                std::string legacy_key = MakeKey(legacy_prefix, id);
+                if (value.has_value()) {
+                    settings_.EraseKey(legacy_key);
+                    return *value;
+                }
+                auto legacy_value = settings_.TryGetString(legacy_key);
+                if (legacy_value.has_value()) {
+                    settings_.SetString(key, *legacy_value);
+                    settings_.EraseKey(legacy_key);
+                    return *legacy_value;
+                }
+                settings_.EraseKey(legacy_key);
+                return fallback;
+            };
+            auto load_int_field = [&](const char* prefix, const char* legacy_prefix, int32_t fallback) {
+                std::string key = MakeKey(prefix, id);
+                auto value = settings_.TryGetInt(key);
+                std::string legacy_key = MakeKey(legacy_prefix, id);
+                if (value.has_value()) {
+                    settings_.EraseKey(legacy_key);
+                    return *value;
+                }
+                auto legacy_value = settings_.TryGetInt(legacy_key);
+                if (legacy_value.has_value()) {
+                    settings_.SetInt(key, *legacy_value);
+                    settings_.EraseKey(legacy_key);
+                    return *legacy_value;
+                }
+                settings_.EraseKey(legacy_key);
+                return fallback;
+            };
+            auto load_bool_field = [&](const char* prefix, const char* legacy_prefix, bool fallback) {
+                std::string key = MakeKey(prefix, id);
+                auto value = settings_.TryGetBool(key);
+                std::string legacy_key = MakeKey(legacy_prefix, id);
+                if (value.has_value()) {
+                    settings_.EraseKey(legacy_key);
+                    return *value;
+                }
+                auto legacy_value = settings_.TryGetBool(legacy_key);
+                if (legacy_value.has_value()) {
+                    settings_.SetBool(key, *legacy_value);
+                    settings_.EraseKey(legacy_key);
+                    return *legacy_value;
+                }
+                settings_.EraseKey(legacy_key);
+                return fallback;
+            };
 
-            std::string time_key = MakeKey("alarm_time_", id);
-            std::string time_str = settings_.GetString(time_key, "0");
+            alarm.name = load_string_field(kAlarmNameKeyPrefix, kLegacyAlarmNameKeyPrefix, "");
+
+            std::string time_str = load_string_field(kAlarmTimeKeyPrefix, kLegacyAlarmTimeKeyPrefix, "0");
             auto trimmed_time = TrimStringView(time_str);
             auto parsed_time = ParseIntegral<long long>(trimmed_time);
             if (!parsed_time.has_value()) {
@@ -269,14 +330,11 @@ void AlarmManager::LoadAlarms() {
             }
             alarm.time = static_cast<time_t>(time_value);
 
-            std::string repeat_key = MakeKey("alarm_repeat_", id);
-            alarm.repeat = settings_.GetBool(repeat_key, false);
+            alarm.repeat = load_bool_field(kAlarmRepeatKeyPrefix, kLegacyAlarmRepeatKeyPrefix, false);
 
-            std::string interval_key = MakeKey("alarm_interval_", id);
-            alarm.interval = settings_.GetInt(interval_key, 0);
+            alarm.interval = load_int_field(kAlarmIntervalKeyPrefix, kLegacyAlarmIntervalKeyPrefix, 0);
 
-            std::string sound_key = MakeKey("alarm_sound_", id);
-            std::string stored_sound = settings_.GetString(sound_key, "ALARM1");
+            std::string stored_sound = load_string_field(kAlarmSoundKeyPrefix, kLegacyAlarmSoundKeyPrefix, "ALARM1");
             if (!IsValidSound(stored_sound)) {
                 ESP_LOGW(TAG, "Invalid sound for alarm %d: %s", id, stored_sound.c_str());
                 stored_sound = "ALARM1";
@@ -297,14 +355,15 @@ void AlarmManager::LoadAlarms() {
             next_alarm_id_ = max_id + 1;
         }
     }
+    settings_.Commit();
 }
 
 void AlarmManager::PersistAlarm(const Alarm& alarm) {
-    settings_.SetString(MakeKey("alarm_", alarm.id), alarm.name);
-    settings_.SetString(MakeKey("alarm_time_", alarm.id), std::to_string(static_cast<long long>(alarm.time)));
-    settings_.SetBool(MakeKey("alarm_repeat_", alarm.id), alarm.repeat);
-    settings_.SetInt(MakeKey("alarm_interval_", alarm.id), alarm.interval);
-    settings_.SetString(MakeKey("alarm_sound_", alarm.id), NormalizeSound(alarm.sound));
+    settings_.SetString(MakeKey(kAlarmNameKeyPrefix, alarm.id), alarm.name);
+    settings_.SetString(MakeKey(kAlarmTimeKeyPrefix, alarm.id), std::to_string(static_cast<long long>(alarm.time)));
+    settings_.SetBool(MakeKey(kAlarmRepeatKeyPrefix, alarm.id), alarm.repeat);
+    settings_.SetInt(MakeKey(kAlarmIntervalKeyPrefix, alarm.id), alarm.interval);
+    settings_.SetString(MakeKey(kAlarmSoundKeyPrefix, alarm.id), NormalizeSound(alarm.sound));
 }
 
 void AlarmManager::PersistAlarmIds() {
@@ -312,11 +371,16 @@ void AlarmManager::PersistAlarmIds() {
 }
 
 void AlarmManager::RemoveAlarmFromStorage(int id) {
-    settings_.EraseKey(MakeKey("alarm_", id));
-    settings_.EraseKey(MakeKey("alarm_time_", id));
-    settings_.EraseKey(MakeKey("alarm_repeat_", id));
-    settings_.EraseKey(MakeKey("alarm_interval_", id));
-    settings_.EraseKey(MakeKey("alarm_sound_", id));
+    settings_.EraseKey(MakeKey(kAlarmNameKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kAlarmTimeKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kAlarmRepeatKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kAlarmIntervalKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kAlarmSoundKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kLegacyAlarmNameKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kLegacyAlarmTimeKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kLegacyAlarmRepeatKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kLegacyAlarmIntervalKeyPrefix, id));
+    settings_.EraseKey(MakeKey(kLegacyAlarmSoundKeyPrefix, id));
 }
 
 int AlarmManager::GenerateId() {
