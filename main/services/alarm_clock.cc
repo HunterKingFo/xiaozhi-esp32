@@ -482,7 +482,7 @@ void AlarmManager::OnSchedulerTimer() {
             }
 
             auto& app = Application::GetInstance();
-            app.PlaySound(sound_clip);
+            app.PlayAlarmSound(sound_clip, alarm_copy.id);
 
             if (notifier) {
                 notifier(alarm_copy);
