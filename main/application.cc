@@ -843,6 +843,7 @@ void Application::OnWakeWordDetected() {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel()) {
+                StopAlarmPlayback();
                 audio_service_.EnableWakeWordDetection(true);
                 return;
             }
