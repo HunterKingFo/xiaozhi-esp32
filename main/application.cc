@@ -346,18 +346,22 @@ void Application::ToggleChatState() {
             if (!protocol_->IsAudioChannelOpened()) {
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    StopAlarmPlayback();
                     return;
                 }
             }
 
+            StopAlarmPlayback();
             SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
         });
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
+            StopAlarmPlayback();
             AbortSpeaking(kAbortReasonNone);
         });
     } else if (device_state_ == kDeviceStateListening) {
         Schedule([this]() {
+            StopAlarmPlayback();
             protocol_->CloseAudioChannel();
         });
     }
@@ -383,14 +387,17 @@ void Application::StartListening() {
             if (!protocol_->IsAudioChannelOpened()) {
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    StopAlarmPlayback();
                     return;
                 }
             }
 
+            StopAlarmPlayback();
             SetListeningMode(kListeningModeManualStop);
         });
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
+            StopAlarmPlayback();
             AbortSpeaking(kAbortReasonNone);
             SetListeningMode(kListeningModeManualStop);
         });
@@ -896,6 +903,8 @@ void Application::SetDeviceState(DeviceState state) {
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
+            alarm_playback_active_ = false;
+            active_alarm_id_ = -1;
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
             audio_service_.EnableVoiceProcessing(false);
@@ -919,6 +928,8 @@ void Application::SetDeviceState(DeviceState state) {
             }
             break;
         case kDeviceStateSpeaking:
+            alarm_playback_active_ = false;
+            active_alarm_id_ = -1;
             display->SetStatus(Lang::Strings::SPEAKING);
 
             if (listening_mode_ != kListeningModeRealtime) {
@@ -1105,3 +1116,20 @@ void Application::SetAecMode(AecMode mode) {
 void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
 }
+
+void Application::PlayAlarmSound(const std::string_view& sound, int alarm_id) {
+    alarm_playback_active_ = true;
+    active_alarm_id_ = alarm_id;
+    audio_service_.PlaySound(sound);
+}
+
+void Application::StopAlarmPlayback() {
+    if (!alarm_playback_active_) {
+        return;
+    }
+
+    alarm_playback_active_ = false;
+    active_alarm_id_ = -1;
+    audio_service_.ResetDecoder();
+}
+

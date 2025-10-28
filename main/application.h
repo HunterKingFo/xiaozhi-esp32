@@ -7,6 +7,7 @@
 #include <esp_timer.h>
 
 #include <string>
+#include <string_view>
 #include <mutex>
 #include <deque>
 #include <memory>
@@ -62,6 +63,10 @@ public:
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
+    void PlayAlarmSound(const std::string_view& sound, int alarm_id);
+    void StopAlarmPlayback();
+    bool IsAlarmPlaybackActive() const { return alarm_playback_active_; }
+    int GetActiveAlarmId() const { return active_alarm_id_; }
     AudioService& GetAudioService() { return audio_service_; }
 
 private:
@@ -78,6 +83,8 @@ private:
     AecMode aec_mode_ = kAecOff;
     std::string last_error_message_;
     AudioService audio_service_;
+    bool alarm_playback_active_ = false;
+    int active_alarm_id_ = -1;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
